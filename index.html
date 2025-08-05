@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>HERPLUS</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-firestore-compat.js"></script>
+  <style>
+    .modal { transition: all 0.3s ease; transform: scale(0.95); opacity: 0; visibility: hidden; }
+    .modal.show { transform: scale(1); opacity: 1; visibility: visible; }
+    #modalVista .bg-white {
+      background-color: #1e3a8a;
+      color: white;
+    }
+    #modalVista button {
+      background-color: #2563eb;
+    }
+  </style>
+</head>
+<body class="bg-blue-950 text-white font-sans">
+
+  <!-- Pantalla de ingreso -->
+  <div id="loginScreen" class="min-h-screen flex flex-col justify-center items-center p-6">
+    <h1 class="text-2xl font-bold mb-4">HERPLUS</h1>
+    <input type="text" id="codigoInput" placeholder="Ingresa tu código de acceso" class="p-2 rounded text-black w-72 mb-2" />
+    <button onclick="validarCodigo()" class="bg-blue-600 px-4 py-2 rounded">Entrar</button>
+    <p id="mensajeError" class="text-red-400 mt-2 hidden">Código inválido o cuenta inactiva.</p>
+  </div>
+
+  <!-- Pantalla principal -->
+  <div id="mainApp" class="hidden">
+    <header class="flex justify-between items-center p-4 bg-blue-900">
+      <div class="flex items-center gap-2">
+        <img src="img/HERPLUS.png" class="w-10" />
+        <h1 class="text-xl font-bold">HERPLUS</h1>
+      </div>
+      <div>
+        🎉 Bienvenido, <span id="usuarioNombre" class="font-semibold"></span> – <span id="diasRestantes"></span> días restantes
+      </div>
+      <button onclick="cerrarSesion()" class="bg-red-600 px-3 py-1 text-sm rounded">Cerrar sesión</button>
+    </header>
+
+    <nav class="bg-blue-800 px-4 py-2 flex gap-4 text-sm">
+      <button onclick="filtrar('todos')">Todo</button>
+      <button onclick="filtrar('pelicula')">Películas</button>
+      <button onclick="filtrar('serie')">Series</button>
+      <button onclick="filtrar('tv')">TV en Vivo</button>
+    </nav>
+
+    <div id="alertaVencimiento" class="hidden bg-yellow-400 text-black text-center p-2">
+      ⚠️ Tu cuenta se desactiva en 3 días. Contacta a tu proveedor para renovar.
+    </div>
+
+    <div class="p-4">
+      <input type="text" id="buscador" oninput="buscarContenido()" placeholder="Buscar contenido..." class="w-full p-2 text-black rounded"/>
+    </div>
+
+    <section class="p-4">
+      <h2 class="text-lg font-semibold mb-2">Recién subidos</h2>
+      <div id="carrusel" class="flex gap-4 overflow-x-auto"></div>
+    </section>
+
+    <section class="p-4">
+      <h2 class="text-lg font-semibold mb-2">Todo el contenido</h2>
+      <div id="listado" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4"></div>
+    </section>
+  </div>
+
+  <!-- Modal de vista -->
+  <div id="modalVista" class="fixed inset-0 bg-black bg-opacity-80 flex items-center justify-center modal z-50">
+    <div class="bg-white p-6 rounded max-w-md w-full relative shadow-xl">
+      <button onclick="cerrarModal()" class="absolute top-2 right-3 text-red-400 font-bold text-lg">✖</button>
+      <img id="modalImagen" class="w-full h-48 object-cover rounded mb-3" />
+      <h3 id="modalTitulo" class="text-xl font-bold mb-2"></h3>
+      <p id="modalDescripcion" class="text-sm mb-2"></p>
+      <a id="modalTrailer" href="#" target="_blank" class="text-blue-200 underline text-sm">Ver trailer</a>
+      <div class="mt-4 text-center">
+        <div id="peliculaContenedor" class="mt-4 hidden">
+          <h4 class="font-semibold mb-2">Reproducción:</h4>
+          <div id="contenedorIframe" class="aspect-video mb-4"></div>
+        </div>
+        <button id="btnVerPelicula" class="text-white px-4 py-2 rounded">Ver Película Completa</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const firebaseConfig = {
+      apiKey: "AIzaSyD_v8yXx1W6zcGFXXMHeNJh0RSzbnO-j84",
+      authDomain: "herplus.firebaseapp.com",
+      projectId: "herplus",
+      storageBucket: "herplus.firebasestorage.app",
+      messagingSenderId: "556494279952",
+      appId: "1:556494279952:web:f788776f50840b28434195"
+    };
+
+    firebase.initializeApp(firebaseConfig);
+    const db = firebase.firestore();
+
+    let usuarioGlobal = {};
+    let todoContenido = [];
+
+    async function validarCodigo() {
+      const codigo = document.getElementById("codigoInput").value.trim();
+      const query = await db.collection("clientes").where("codigo", "==", codigo).get();
+
+      if (!query.empty) {
+        const user = query.docs[0].data();
+        if (user.activo) {
+          usuarioGlobal = user;
+          document.getElementById("loginScreen").classList.add("hidden");
+          document.getElementById("mainApp").classList.remove("hidden");
+          document.getElementById("usuarioNombre").textContent = user.nombre;
+          document.getElementById("diasRestantes").textContent = user.meses * 30;
+          if ((user.meses * 30) <= 3) {
+            document.getElementById("alertaVencimiento").classList.remove("hidden");
+          }
+          cargarContenido();
+        } else {
+          document.getElementById("mensajeError").classList.remove("hidden");
+        }
+      } else {
+        document.getElementById("mensajeError").classList.remove("hidden");
+      }
+    }
+
+    function cerrarSesion() {
+      location.reload();
+    }
+
+    function cargarContenido() {
+      db.collection("peliculas").onSnapshot(snapshot => {
+        todoContenido = [];
+        snapshot.forEach(doc => todoContenido.push(doc.data()));
+        renderContenido(todoContenido);
+      });
+    }
+
+    function renderContenido(data) {
+      const listado = document.getElementById("listado");
+      const carrusel = document.getElementById("carrusel");
+      listado.innerHTML = "";
+      carrusel.innerHTML = "";
+
+      data.forEach((item, i) => {
+        const card = `
+          <div class="cursor-pointer" onclick="verVista(${i})">
+            <img src="${item.imagen}" class="w-full h-40 object-cover rounded mb-1" onerror="this.src='https://via.placeholder.com/300x200.png?text=Imagen+no+disponible';" />
+            <h3 class="text-sm text-center">${item.titulo}</h3>
+          </div>`;
+        listado.innerHTML += card;
+        if (i < 5) carrusel.innerHTML += card;
+      });
+    }
+
+    function buscarContenido() {
+      const texto = document.getElementById("buscador").value.toLowerCase();
+      const filtrado = todoContenido.filter(c => c.titulo.toLowerCase().includes(texto));
+      renderContenido(filtrado);
+    }
+
+    function filtrar(seccion) {
+      if (seccion === "todos") return renderContenido(todoContenido);
+      const filtrado = todoContenido.filter(c => c.seccion === seccion);
+      renderContenido(filtrado);
+    }
+
+    function verVista(i) {
+      const c = todoContenido[i];
+      document.getElementById("modalTitulo").textContent = c.titulo;
+      document.getElementById("modalDescripcion").textContent = c.descripcion;
+      document.getElementById("modalImagen").src = c.imagen;
+      document.getElementById("modalTrailer").href = c.trailer;
+
+      const contenedor = document.getElementById("contenedorIframe");
+      const player = c.pelicula.includes("<iframe") ? c.pelicula : `<iframe src="${c.pelicula}" width="100%" height="300" frameborder="0" allowfullscreen></iframe>`;
+      contenedor.innerHTML = player;
+
+      document.getElementById("peliculaContenedor").classList.add("hidden");
+      document.getElementById("modalVista").classList.add("show");
+
+      document.getElementById("btnVerPelicula").onclick = () => {
+        document.getElementById("peliculaContenedor").classList.remove("hidden");
+        document.getElementById("modalImagen").classList.add("hidden");
+        document.getElementById("modalTitulo").classList.add("hidden");
+        document.getElementById("modalDescripcion").classList.add("hidden");
+        document.getElementById("modalTrailer").classList.add("hidden");
+        document.getElementById("btnVerPelicula").classList.add("hidden");
+      };
+    }
+
+    function cerrarModal() {
+      document.getElementById("modalVista").classList.remove("show");
+      document.getElementById("contenedorIframe").innerHTML = "";
+      document.getElementById("modalImagen").classList.remove("hidden");
+      document.getElementById("modalTitulo").classList.remove("hidden");
+      document.getElementById("modalDescripcion").classList.remove("hidden");
+      document.getElementById("modalTrailer").classList.remove("hidden");
+      document.getElementById("btnVerPelicula").classList.remove("hidden");
+    }
+  </script>
+</body>
+</html>
+
+
+
