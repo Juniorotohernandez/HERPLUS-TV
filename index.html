@@ -8,25 +8,24 @@
   <script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-firestore-compat.js"></script>
   <style>
-    body background-color: #003366;
+    body { background: url('img/fondo.jpg') no-repeat center center fixed; background-size: cover; }
     .nav button.active { color: #1e90ff; border-bottom: 2px solid #1e90ff; }
     #userInfo { font-weight: bold; color: #7ec8f8; background: rgba(255,255,255,0.1); padding: 6px 10px; border-radius: 8px; backdrop-filter: blur(4px); }
     .movie img { transition: transform 0.3s ease; }
     .movie:hover img { transform: scale(1.05); }
     .movie { outline: none; }
     iframe { border: none; }
-
-    /* Botón de cierre rojo, cuadrado y tamaño fijo */
-    .btn-close {
-      width: 40px; height: 40px; background: #dc2626; color: #fff;
-      font-weight: bold; font-size: 20px; line-height: 40px; text-align: center;
-      border-radius: 6px; box-shadow: 0 2px 8px rgba(0,0,0,0.4);
-    }
-
-    /* Modal base */
+    .btn-close { width: 40px; height: 40px; background: #dc2626; color: #fff; font-weight: bold; font-size: 20px; line-height: 40px; text-align: center; border-radius: 6px; box-shadow: 0 2px 8px rgba(0,0,0,0.4); }
     .modal-layer { position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center; }
     .modal-bg { position:absolute; inset:0; background: rgba(0,0,0,0.9); }
     .modal-content { position:relative; width:100%; height:100%; }
+
+    /* Posters uniformes en carouseles */
+    :root { --poster-w: 180px; }
+    @media (max-width: 480px) { :root { --poster-w: 140px; } }
+    .poster { width: var(--poster-w); }
+    .poster-frame { width: 100%; aspect-ratio: 2 / 3; background: #1f2937; }
+    .poster-img { width: 100%; height: 100%; object-fit: cover; display: block; }
   </style>
 </head>
 <body class="text-white font-sans">
@@ -69,8 +68,23 @@
 <div id="alertaMsg" class="bg-yellow-400 text-black text-center p-2 hidden"></div>
 
 <!-- Contenido principal -->
-<main class="p-4">
-  <div id="contenedorSecciones" class="space-y-6"></div>
+<main class="p-4 space-y-6">
+  <!-- ⏯️ Seguir viendo -->
+  <section id="seguirViendoSection" class="hidden">
+    <h2 class="text-lg font-bold text-blue-300 mb-2">⏯️ Seguir viendo</h2>
+    <div id="seguirViendoCarousel" class="flex gap-4 overflow-x-auto pb-2"></div>
+  </section>
+
+  <!-- ⭐ Favoritos -->
+  <section id="favoritosSection" class="hidden">
+    <h2 class="text-lg font-bold text-blue-300 mb-2">⭐ Tus favoritos</h2>
+    <div id="favoritosCarousel" class="flex gap-4 overflow-x-auto pb-2"></div>
+  </section>
+
+  <!-- Resto de secciones por categoría -->
+  <section>
+    <div id="contenedorSecciones" class="space-y-6"></div>
+  </section>
 </main>
 
 <script>
@@ -89,37 +103,24 @@
   // ===== Estado =====
   let usuarioActivo = null;
   let todasLasPeliculas = [];
+  const cacheById = new Map();
+  let unsubFavoritos = null;
+  let unsubProgreso = null;
 
-  // ===== Utilidades (iframes/URLs de cualquier dominio) =====
-  function extraerSrcDeIframe(html) {
-    const m = /src=["']([^"']+)["']/i.exec(html);
-    return m ? m[1] : "";
-  }
-
-  // Normaliza enlaces de Google Drive a /preview para embeber
+  // ===== Utilidades (iframes/URLs) =====
+  function extraerSrcDeIframe(html) { const m = /src=["']([^"']+)["']/i.exec(html); return m ? m[1] : ""; }
   function normalizarUrlDrive(url) {
     try {
       const u = new URL(url);
       if (u.hostname.includes("drive.google.com")) {
-        // /file/d/ID/...
-        const fileIdMatch = /\/file\/d\/([^/]+)/.exec(u.pathname);
-        if (fileIdMatch) return `https://drive.google.com/file/d/${fileIdMatch[1]}/preview`;
-        // /open?id=ID
-        if (u.pathname === "/open" && u.searchParams.get("id")) {
-          const id = u.searchParams.get("id");
-          return `https://drive.google.com/file/d/${id}/preview`;
-        }
-        // /uc?id=ID
-        if (u.pathname === "/uc" && u.searchParams.get("id")) {
-          const id = u.searchParams.get("id");
-          return `https://drive.google.com/file/d/${id}/preview`;
-        }
+        const m1 = /\/file\/d\/([^/]+)/.exec(u.pathname);
+        if (m1) return `https://drive.google.com/file/d/${m1[1]}/preview`;
+        if (u.pathname === "/open" && u.searchParams.get("id")) return `https://drive.google.com/file/d/${u.searchParams.get("id")}/preview`;
+        if (u.pathname === "/uc" && u.searchParams.get("id")) return `https://drive.google.com/file/d/${u.searchParams.get("id")}/preview`;
       }
       return url;
     } catch { return url; }
   }
-
-  // Crea un iframe con sandbox (permitimos scripts y fullscreen)
   function crearIframeSeguro(src) {
     const ifr = document.createElement("iframe");
     ifr.src = normalizarUrlDrive(src);
@@ -129,28 +130,102 @@
     ifr.loading = "lazy";
     return ifr;
   }
-
   function mostrarError(mensaje) {
     const em = document.getElementById("errorMsg");
     em.textContent = mensaje;
     em.classList.remove("hidden");
   }
 
-  function getDiasRestantes() {
-    if (!usuarioActivo?.expiryAt) return 0;
-    return Math.max(0, Math.ceil((usuarioActivo.expiryAt - Date.now()) / 86400000));
+  // ===== Días restantes =====
+  function getDiasRestantes() { if (!usuarioActivo?.expiryAt) return 0; return Math.max(0, Math.ceil((usuarioActivo.expiryAt - Date.now()) / 86400000)); }
+  function pintarUserInfo() { document.getElementById("userInfo").textContent = `${usuarioActivo.nombre} • ${getDiasRestantes()} día(s) restantes`; }
+  function showWarn() { const a = document.getElementById("alertaMsg"); a.textContent = "⚠️ Tu cuenta está por vencer. Contacta a tu proveedor."; a.classList.remove("hidden"); }
+
+  // ===== Sesiones (pantallas) =====
+  const HEARTBEAT_MS = 30_000;          // lateo cada 30s
+  const SESSION_TTL_MS = 3 * 60_000;    // expira a los ~3min
+  let sesionRef = null, hbTimer = null, focusHandlersOn = false;
+
+  function deviceId(){
+    try {
+      let id = localStorage.getItem('deviceId');
+      if(!id){ id = (crypto.randomUUID?.() || (Date.now()+"-"+Math.random())); localStorage.setItem('deviceId', id); }
+      return id;
+    } catch { return Date.now()+"-"+Math.random(); }
   }
 
-  function pintarUserInfo() {
-    const dias = getDiasRestantes();
-    document.getElementById("userInfo").textContent =
-      `${usuarioActivo.nombre} • ${dias} día(s) restantes`;
+  async function puedeIniciarSesion(cliente){
+    const cutoff = Date.now() - SESSION_TTL_MS;
+    const snap = await db.collection('clientes').doc(cliente.id)
+      .collection('sesiones').where('lastSeen','>=', cutoff).get();
+    const cupo = cliente.pantallas || 1;
+    if (snap.size < cupo) return true;
+    // permitir reingreso si es el mismo dispositivo
+    return snap.docs.some(d => d.id === deviceId());
   }
 
-  function showWarn() {
-    const a = document.getElementById("alertaMsg");
-    a.textContent = "⚠️ Tu cuenta está por vencer. Contacta a tu proveedor.";
-    a.classList.remove("hidden");
+  async function abrirSesion(cliente){
+    const ref = db.collection('clientes').doc(cliente.id).collection('sesiones').doc(deviceId());
+    sesionRef = ref;
+    await ref.set({
+      deviceId: deviceId(),
+      ua: navigator.userAgent,
+      createdAt: Date.now(),
+      lastSeen: Date.now(),
+      focused: document.hasFocus(),
+      playerOpen: false
+    }, { merge: true });
+
+    if (hbTimer) clearInterval(hbTimer);
+    hbTimer = setInterval(()=> { ref.update({ lastSeen: Date.now() }).catch(()=>{}); }, HEARTBEAT_MS);
+
+    if (!focusHandlersOn){
+      window.addEventListener('focus', ()=> ref.update({ focused:true, lastSeen: Date.now() }).catch(()=>{}));
+      window.addEventListener('blur',  ()=> ref.update({ focused:false, lastSeen: Date.now() }).catch(()=>{}));
+      focusHandlersOn = true;
+    }
+
+    const onHide = async () => { await cerrarSesionActiva(); };
+    window.addEventListener('pagehide', onHide);
+    window.addEventListener('beforeunload', onHide);
+    sesionRef._off = () => {
+      window.removeEventListener('pagehide', onHide);
+      window.removeEventListener('beforeunload', onHide);
+    };
+  }
+
+  async function cerrarSesionActiva(){
+    try {
+      if (hbTimer) clearInterval(hbTimer);
+      hbTimer = null;
+      await sesionRef?.set({ playerOpen:false, focused:false, lastSeen: Date.now() }, { merge:true });
+      await sesionRef?.delete();
+      sesionRef?._off?.();
+    } catch {}
+    sesionRef = null;
+  }
+
+  // Marcar qué se está viendo
+  function marcarViendoPelicula(p){
+    sesionRef?.update({
+      playerOpen: true,
+      nowPlaying: { type:'pelicula', title: p.titulo || '', contentId: p.id || null },
+      lastSeen: Date.now()
+    }).catch(()=>{});
+  }
+  function marcarViendoEpisodio(serieId, serieTitulo, tempNumero, epIdx, ep){
+    sesionRef?.update({
+      playerOpen: true,
+      nowPlaying: { type:'serie', title: serieTitulo || '', contentId: serieId || null, season: tempNumero, episodeIndex: epIdx },
+      lastSeen: Date.now()
+    }).catch(()=>{});
+  }
+  function limpiarViendo(){
+    sesionRef?.update({
+      playerOpen: false,
+      nowPlaying: firebase.firestore.FieldValue.delete(),
+      lastSeen: Date.now()
+    }).catch(()=>{});
   }
 
   // ===== Login y sesión =====
@@ -158,76 +233,69 @@
     const codigo = document.getElementById("codigoInput").value.trim();
     document.getElementById("errorMsg").classList.add("hidden");
     if (!codigo) { mostrarError("Ingresa tu código."); return; }
-
     try {
       const snapshot = await db.collection("clientes").where("codigo", "==", codigo).limit(1).get();
       if (snapshot.empty) return mostrarError("Código inválido o cuenta inactiva.");
-
-      const doc = snapshot.docs[0];
-      const data = doc.data();
+      const doc = snapshot.docs[0], data = doc.data();
 
       if (!data.activo) return mostrarError("Cuenta inactiva.");
       if ((data.pantallas ?? 0) <= 0) return mostrarError("No tienes pantallas disponibles. Contacta a tu proveedor.");
 
       const fechaRegistro = data.fechaRegistro?.toDate?.() ?? new Date();
       const expiryAt = fechaRegistro.getTime() + (data.meses * 30 * 24 * 60 * 60 * 1000);
-      const diasRestantes = Math.max(0, Math.ceil((expiryAt - Date.now()) / 86400000));
-      if (diasRestantes <= 0) return mostrarError("Tu cuenta ha expirado.");
+      if (expiryAt <= Date.now()) return mostrarError("Tu cuenta ha expirado.");
 
-      // Guarda solo lo necesario
-      usuarioActivo = {
-        id: doc.id,
-        nombre: data.nombre ?? "Usuario",
-        pantallas: data.pantallas ?? 0,
-        expiryAt
-      };
+      const okPantallas = await puedeIniciarSesion({ id: doc.id, pantallas: data.pantallas });
+      if (!okPantallas) return mostrarError("Has alcanzado el límite de pantallas activas.");
+
+      usuarioActivo = { id: doc.id, nombre: data.nombre ?? "Usuario", pantallas: data.pantallas ?? 0, expiryAt };
       sessionStorage.setItem("usuario", JSON.stringify(usuarioActivo));
       iniciarSesion();
-
     } catch (e) {
-      console.error(e);
-      mostrarError("Error de red. Intenta de nuevo.");
+      console.error(e); mostrarError("Error de red. Intenta de nuevo.");
     }
   }
 
-  function iniciarSesion() {
+  async function iniciarSesion() {
     document.getElementById("loginModal").classList.add("hidden");
     pintarUserInfo();
 
-    // Actualiza cada día
-    setInterval(() => {
-      pintarUserInfo();
-      if (getDiasRestantes() <= 3) showWarn();
-    }, 86400000);
-
+    setInterval(() => { pintarUserInfo(); if (getDiasRestantes() <= 3) showWarn(); }, 60 * 60 * 1000);
     if (getDiasRestantes() <= 3) showWarn();
 
+    await abrirSesion(usuarioActivo);
     cargarContenido();
+    iniciarPersonalizacion();
   }
 
   function cerrarSesion() {
+    cerrarSesionActiva();
     sessionStorage.removeItem("usuario");
     usuarioActivo = null;
     document.getElementById("userInfo").textContent = "";
     document.getElementById("alertaMsg").classList.add("hidden");
     document.getElementById("loginModal").classList.remove("hidden");
+
+    unsubFavoritos?.(); unsubFavoritos = null;
+    unsubProgreso?.(); unsubProgreso = null;
+    document.getElementById('favoritosCarousel').innerHTML = "";
+    document.getElementById('seguirViendoCarousel').innerHTML = "";
+    document.getElementById('favoritosSection').classList.add('hidden');
+    document.getElementById('seguirViendoSection').classList.add('hidden');
   }
 
   // ===== Contenido =====
   async function cargarContenido() {
     try {
       const snapshot = await db.collection("peliculas").get();
-      // IMPORTANTE: conservar el ID para progreso de series
-      const peliculasFS = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
-
-      todasLasPeliculas = [...peliculasFS];
+      todasLasPeliculas = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+      indexPeliculasCache(todasLasPeliculas);
       mostrarSecciones(todasLasPeliculas);
       llenarFiltroCategorias(todasLasPeliculas);
-    } catch (e) {
-      console.error(e);
-      alert("No se pudo cargar el contenido. Revisa tu conexión.");
-    }
+    } catch (e) { console.error(e); alert("No se pudo cargar el contenido. Revisa tu conexión."); }
   }
+  function indexPeliculasCache(arr){ arr.forEach(p => { if (p.id) cacheById.set(p.id, p); }); }
+  async function getContentById(id){ if (cacheById.has(id)) return cacheById.get(id); const doc=await db.collection('peliculas').doc(id).get(); if(doc.exists){ const p={ id:doc.id, ...doc.data() }; cacheById.set(p.id,p); return p;} return null; }
 
   function renderCard(p, idx) {
     const titulo = p.titulo ?? "Sin título";
@@ -244,17 +312,10 @@
   }
 
   function mostrarSecciones(peliculas) {
-    // Agrupar por categoría
     const secciones = {};
-    peliculas.forEach(p => {
-      const cat = p.categoria ?? "Sin categoría";
-      if (!secciones[cat]) secciones[cat] = [];
-      secciones[cat].push(p);
-    });
+    peliculas.forEach(p => { const cat = p.categoria ?? "Sin categoría"; if (!secciones[cat]) secciones[cat] = []; secciones[cat].push(p); });
 
-    const cont = document.getElementById("contenedorSecciones");
-    cont.innerHTML = "";
-
+    const cont = document.getElementById("contenedorSecciones"); cont.innerHTML = "";
     for (const cat in secciones) {
       const lista = secciones[cat];
       const wrap = document.createElement("section");
@@ -265,18 +326,9 @@
         </div>`;
       cont.appendChild(wrap);
 
-      // Listeners para cada card de esta sección
       wrap.querySelectorAll(".movie").forEach(card => {
-        card.addEventListener("click", () => {
-          const i = +card.dataset.idx;
-          mostrarModal(lista[i]);
-        });
-        card.addEventListener("keyup", (e) => {
-          if (e.key === "Enter" || e.key === " ") {
-            const i = +card.dataset.idx;
-            mostrarModal(lista[i]);
-          }
-        });
+        card.addEventListener("click", () => { const i = +card.dataset.idx; mostrarModal(lista[i]); });
+        card.addEventListener("keyup", (e) => { if (e.key === "Enter" || e.key === " ") { const i = +card.dataset.idx; mostrarModal(lista[i]); }});
       });
     }
   }
@@ -284,42 +336,119 @@
   function llenarFiltroCategorias(peliculas) {
     const filtro = document.getElementById("filtroCategoria");
     const categorias = Array.from(new Set(peliculas.map(p => p.categoria ?? "Sin categoría")));
-    filtro.innerHTML = `<option value="todos">Filtrar por categoría</option>` +
-      categorias.map(c => `<option value="${c}">${c}</option>`).join("");
+    filtro.innerHTML = `<option value="todos">Filtrar por categoría</option>` + categorias.map(c => `<option value="${c}">${c}</option>`).join("");
   }
-
   function filtrarCategoria() {
     const cat = document.getElementById("filtroCategoria").value;
     if (cat === "todos") return mostrarSecciones(todasLasPeliculas);
-    const filtrado = todasLasPeliculas.filter(p => (p.categoria ?? "Sin categoría") === cat);
-    mostrarSecciones(filtrado);
+    mostrarSecciones(todasLasPeliculas.filter(p => (p.categoria ?? "Sin categoría") === cat));
   }
-
   function filtrarSeccion(tipo) {
     if (tipo === "todos") return mostrarSecciones(todasLasPeliculas);
-    const filtrado = todasLasPeliculas.filter(p => (p.seccion ?? "").toLowerCase() === tipo);
-    mostrarSecciones(filtrado);
+    mostrarSecciones(todasLasPeliculas.filter(p => (p.seccion ?? "").toLowerCase() === tipo));
   }
-
   function buscarPorTitulo() {
     const texto = document.getElementById("searchInput").value.toLowerCase();
-    const filtrado = todasLasPeliculas.filter(p => (p.titulo ?? "").toLowerCase().includes(texto));
-    mostrarSecciones(filtrado);
+    mostrarSecciones(todasLasPeliculas.filter(p => (p.titulo ?? "").toLowerCase().includes(texto)));
   }
 
-  // ===== Progreso por serie (localStorage) =====
-  function keyProgreso(serieId){ return `progress_${serieId}`; }
-  function guardarProgresoSerie(serieId, data){
-    try { localStorage.setItem(keyProgreso(serieId), JSON.stringify(data)); } catch {}
-  }
-  function cargarProgresoSerie(serieId){
-    try {
-      const raw = localStorage.getItem(keyProgreso(serieId));
-      return raw ? JSON.parse(raw) : null;
-    } catch { return null; }
+  // ===== Progreso en la nube + favoritos =====
+  function progresoDocRef(contentId){ return db.collection('clientes').doc(usuarioActivo.id).collection('progreso').doc(contentId); }
+  async function guardarProgresoCloud(contentId, data){ try { await progresoDocRef(contentId).set({ ...data, updatedAt: Date.now() }, { merge: true }); } catch(e){ console.warn(e); } }
+  async function cargarProgresoCloud(contentId){ try { const d = await progresoDocRef(contentId).get(); return d.exists ? d.data() : null; } catch(e){ return null; } }
+
+  function favDocRef(contentId){ return db.collection('clientes').doc(usuarioActivo.id).collection('favoritos').doc(contentId); }
+  async function isFavorito(contentId){ try{ const d=await favDocRef(contentId).get(); return d.exists; }catch(e){return false;} }
+  async function toggleFavorito(p, btn){
+    if (!p.id) return alert("Contenido sin ID.");
+    const ref = favDocRef(p.id), ex = await ref.get();
+    if (ex.exists) { await ref.delete(); if (btn) btn.textContent = '☆ Agregar a favoritos'; }
+    else { await ref.set({ titulo: p.titulo||'', categoria: p.categoria||'', imagen: p.imagen||'', ts: Date.now() }); if (btn) btn.textContent = '★ En favoritos'; }
   }
 
-  // ===== Modales =====
+  function iniciarPersonalizacion(){
+    if (!usuarioActivo?.id) return;
+
+    unsubFavoritos?.();
+    unsubFavoritos = db.collection('clientes').doc(usuarioActivo.id).collection('favoritos')
+      .orderBy('ts','desc')
+      .onSnapshot(snap => renderFavoritos(snap.docs.map(d=>({ id:d.id, ...d.data() }))));
+
+    unsubProgreso?.();
+    unsubProgreso = db.collection('clientes').doc(usuarioActivo.id).collection('progreso')
+      .orderBy('updatedAt','desc').limit(30)
+      .onSnapshot(snap => renderSeguirViendo(snap.docs.map(d=>({ contentId:d.id, ...d.data() }))));
+  }
+
+  // === Carrusel Favoritos ===
+  function renderFavoritos(items){
+    const sec = document.getElementById('favoritosSection');
+    const car = document.getElementById('favoritosCarousel');
+    car.innerHTML = "";
+    if (!items.length) { sec.classList.add('hidden'); return; }
+    sec.classList.remove('hidden');
+
+    items.forEach(it=>{
+      const titulo = it.titulo || "Favorito";
+      const img = it.imagen || "img/placeholder.jpg";
+      const card = document.createElement('div');
+      card.className = "poster";
+      card.innerHTML = `
+        <div class="poster-frame rounded overflow-hidden cursor-pointer">
+          <img src="${img}" alt="${titulo}" class="poster-img">
+        </div>
+        <p class="mt-1 text-xs truncate text-center" style="width: var(--poster-w)">${titulo}</p>
+      `;
+      card.querySelector('.poster-frame').addEventListener('click', async ()=>{
+        const p = await getContentById(it.id);
+        if (!p) return alert("Contenido no disponible.");
+        mostrarModal(p);
+      });
+      car.appendChild(card);
+    });
+  }
+
+  // === Carrusel Seguir Viendo ===
+  function renderSeguirViendo(items){
+    const sec = document.getElementById('seguirViendoSection');
+    const car = document.getElementById('seguirViendoCarousel');
+    car.innerHTML = "";
+    if (!items.length) { sec.classList.add('hidden'); return; }
+    sec.classList.remove('hidden');
+
+    items.forEach(async it=>{
+      const p = await getContentById(it.contentId);
+      if (!p) return;
+      const titulo = p.titulo || "Contenido";
+      const img = p.imagen || "img/placeholder.jpg";
+      const etiqueta = (it.tipo === 'serie' && it.temporada != null)
+        ? `T${it.temporada} • ${p.temporadas?.find(t=> (t.numero??0)===it.temporada)?.episodios?.[it.episodioIndex]?.titulo ?? 'Episodio'}`
+        : 'Película';
+
+      const card = document.createElement('div');
+      card.className = "poster";
+      card.innerHTML = `
+        <div class="poster-frame rounded overflow-hidden cursor-pointer relative">
+          <img src="${img}" alt="${titulo}" class="poster-img">
+          <div class="absolute bottom-0 left-0 right-0 bg-black bg-opacity-60 text-xs px-2 py-1">${etiqueta}</div>
+        </div>
+        <p class="mt-1 text-xs truncate text-center" style="width: var(--poster-w)">${titulo}</p>
+      `;
+      card.querySelector('.poster-frame').addEventListener('click', ()=>{
+        if (it.tipo === 'serie' && it.temporada != null) {
+          const temp = p.temporadas?.find(t=> (t.numero??0)===it.temporada);
+          const ep = temp?.episodios?.[it.episodioIndex];
+          if (ep) return abrirEpisodio(p.id, p.titulo || '', it.temporada, it.episodioIndex, ep);
+          mostrarModal(p);
+        } else {
+          abrirReproductor(p);
+        }
+      });
+      car.appendChild(card);
+    });
+  }
+
+  // ===== Modales / Reproductores =====
   function pushModalState() {
     history.pushState({ modal: true }, "");
     const popListener = () => closeTopModalOnce();
@@ -327,20 +456,15 @@
     window.addEventListener("popstate", popListener, { once: true });
     document.addEventListener("keydown", escListener, { once: true });
   }
-
   function closeTopModalOnce() {
     const modals = document.querySelectorAll(".modal-layer");
     if (modals.length) modals[modals.length - 1].remove();
   }
 
-  // Reproduce un episodio (acepta url o iframe) y guarda progreso
-  function abrirEpisodio(serieId, tempNumero, epIdx, ep) {
+  function abrirEpisodio(serieId, serieTitulo, tempNumero, epIdx, ep) {
     const contenido = ((ep.url ?? ep.iframe) ?? "").trim();
     if (!contenido) { alert("Episodio sin fuente"); return; }
-
-    // Cierra modal anterior si está
-    const prev = document.querySelector(".modal-layer");
-    prev?.remove();
+    const prev = document.querySelector(".modal-layer"); prev?.remove();
 
     const modal = document.createElement("div");
     modal.className = "modal-layer";
@@ -349,18 +473,19 @@
       <div class="modal-content">
         <button id="btnCerrarPlayer" class="btn-close absolute top-4 right-4 z-10" aria-label="Cerrar">✕</button>
       </div>`;
-
     const src = /^<iframe[\s\S]*<\/iframe>$/i.test(contenido) ? extraerSrcDeIframe(contenido) : contenido;
     const usar = crearIframeSeguro(src);
     modal.querySelector(".modal-content").appendChild(usar);
 
-    // Guardar progreso
-    if (serieId) guardarProgresoSerie(serieId, { temporada: tempNumero, episodioIndex: epIdx });
+    // progreso + sesión "viendo"
+    if (serieId) {
+      guardarProgresoCloud(serieId, { tipo:'serie', temporada: tempNumero, episodioIndex: epIdx, titulo: ep.titulo || '' });
+      marcarViendoEpisodio(serieId, serieTitulo, tempNumero, epIdx, ep);
+    }
 
-    // Cerrar
-    modal.querySelector("#btnCerrarPlayer").addEventListener("click", () => modal.remove());
-    modal.querySelector(".modal-bg").addEventListener("click", () => modal.remove());
-
+    const cerrar = () => { limpiarViendo(); modal.remove(); };
+    modal.querySelector("#btnCerrarPlayer").addEventListener("click", cerrar);
+    modal.querySelector(".modal-bg").addEventListener("click", cerrar);
     document.body.appendChild(modal);
     pushModalState();
   }
@@ -377,47 +502,55 @@
           <img src="${p.imagen ?? 'img/placeholder.jpg'}" class="w-32 mb-2 rounded shadow" alt="${p.titulo ?? 'Portada'}">
           <h2 class="text-2xl font-bold"></h2>
           <p class="px-4 max-w-3xl"></p>
-          <div id="acciones" class="w-full max-w-3xl"></div>
+          <div id="acciones" class="w-full max-w-3xl flex flex-col items-center gap-2"></div>
           <button id="btnCerrarModal" class="btn-close absolute top-4 right-4" aria-label="Cerrar">✕</button>
         </div>
       </div>`;
-
-    // Texto seguro
     modal.querySelector("h2").textContent = p.titulo ?? "Sin título";
     modal.querySelector("p").textContent = p.descripcion ?? "";
 
-    // Trailer (opcional)
     const trailerRaw = typeof p.trailer === "string" ? p.trailer.trim() : "";
     if (trailerRaw) {
       const src = /^<iframe[\s\S]*<\/iframe>$/i.test(trailerRaw) ? extraerSrcDeIframe(trailerRaw) : trailerRaw;
       const ifr = crearIframeSeguro(src);
       modal.querySelector(".modal-content").appendChild(ifr);
     }
-
     const acciones = modal.querySelector("#acciones");
 
-    if (esSerie) {
-      // Botón "Continuar donde me quedé"
-      const prog = p.id ? cargarProgresoSerie(p.id) : null;
-      if (prog && Array.isArray(p.temporadas)) {
-        const tempSel = p.temporadas.find(t => (t.numero ?? 0) === prog.temporada);
-        if (tempSel && tempSel.episodios?.[prog.episodioIndex]) {
-          const ep = tempSel.episodios[prog.episodioIndex];
-          const btnCont = document.createElement("button");
-          btnCont.className = "bg-yellow-500 hover:bg-yellow-600 px-4 py-2 rounded font-semibold mb-3";
+    // Favoritos
+    const btnFav = document.createElement("button");
+    btnFav.className = "bg-pink-600 hover:bg-pink-700 px-3 py-2 rounded font-semibold";
+    btnFav.textContent = "☆ Agregar a favoritos";
+    btnFav.addEventListener("click", () => toggleFavorito(p, btnFav));
+    acciones.appendChild(btnFav);
+    if (p.id) { isFavorito(p.id).then(v => { if (v) btnFav.textContent = "★ En favoritos"; }); }
+
+    // Continuar (progreso)
+    if (p.id) {
+      cargarProgresoCloud(p.id).then(prog => {
+        if (!prog) return;
+        const btnCont = document.createElement("button");
+        btnCont.className = "bg-yellow-500 hover:bg-yellow-600 px-4 py-2 rounded font-semibold";
+        if (prog.tipo === 'serie' && Array.isArray(p.temporadas)) {
+          const tempSel = p.temporadas.find(t => (t.numero ?? 0) === prog.temporada);
+          const ep = tempSel?.episodios?.[prog.episodioIndex];
+          if (!ep) return;
           btnCont.textContent = `▶ Continuar: T${prog.temporada} • ${ep.titulo ?? ('Ep ' + (prog.episodioIndex+1))}`;
-          btnCont.addEventListener("click", () => abrirEpisodio(p.id, prog.temporada, prog.episodioIndex, ep));
-          acciones.appendChild(btnCont);
+          btnCont.addEventListener("click", () => abrirEpisodio(p.id, p.titulo || '', prog.temporada, prog.episodioIndex, ep));
+        } else {
+          btnCont.textContent = "▶ Continuar película";
+          btnCont.addEventListener("click", () => abrirReproductor(p));
         }
-      }
+        acciones.prepend(btnCont);
+      });
+    }
 
-      // Acordeón de temporadas
+    if (esSerie) {
       const wrap = document.createElement("div");
-      wrap.className = "space-y-3 text-left";
+      wrap.className = "space-y-3 text-left w-full";
+      acciones.appendChild(wrap);
 
-      // Ordena por numero asc
       const temps = [...p.temporadas].sort((a,b)=>(a.numero??0)-(b.numero??0));
-
       temps.forEach((t, tIdx) => {
         const tempTitulo = t.nombre || `Temporada ${t.numero ?? (tIdx+1)}`;
         const card = document.createElement("div");
@@ -428,52 +561,40 @@
             <span>${tempTitulo}</span>
             <span class="transform transition-transform">▼</span>
           </button>
-          <div class="px-4 pb-4 hidden">
+          <div class="px-4 pb-4 hidden accordion-body">
             <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2"></div>
           </div>`;
 
         const btnHeader = card.querySelector("button");
         const arrow = btnHeader.querySelector("span:last-child");
-        const body = card.querySelector("div.hidden");
+        const body = card.querySelector(".accordion-body");
         const grid = body.querySelector(".grid");
 
-        // Rellenar episodios
         const eps = Array.isArray(t.episodios) ? [...t.episodios] : [];
         eps.sort((a,b)=>(a.numero??0)-(b.numero??0));
-
         eps.forEach((ep, epIdx) => {
-          const btn = document.createElement("button");
-          btn.className = "bg-blue-600 hover:bg-blue-700 px-3 py-2 rounded text-sm text-left";
+          const b = document.createElement("button");
+          b.className = "bg-blue-600 hover:bg-blue-700 px-3 py-2 rounded text-sm text-left";
           const etiqueta = ep.titulo ?? `Episodio ${epIdx+1}`;
           const num = (ep.numero != null) ? `E${ep.numero} - ` : "";
-          btn.textContent = `${num}${etiqueta}`;
-          btn.addEventListener("click", () => abrirEpisodio(p.id, (t.numero ?? (tIdx+1)), epIdx, ep));
-          grid.appendChild(btn);
+          b.textContent = `${num}${etiqueta}`;
+          b.addEventListener("click", () => abrirEpisodio(p.id, p.titulo || '', (t.numero ?? (tIdx+1)), epIdx, ep));
+          grid.appendChild(b);
         });
 
-        // Toggle acordeón (cierra otros)
         btnHeader.addEventListener("click", () => {
           const isHidden = body.classList.contains("hidden");
-          document.querySelectorAll("#acciones > div > div > div.px-4.pb-4").forEach(el=>{
+          wrap.querySelectorAll(".accordion-body").forEach(el=>{
             el.classList.add("hidden");
             el.previousElementSibling?.querySelector("span:last-child")?.classList.remove("rotate-180");
           });
-          if (isHidden) {
-            body.classList.remove("hidden");
-            arrow.classList.add("rotate-180");
-          } else {
-            body.classList.add("hidden");
-            arrow.classList.remove("rotate-180");
-          }
+          if (isHidden) { body.classList.remove("hidden"); arrow.classList.add("rotate-180"); }
+          else { body.classList.add("hidden"); arrow.classList.remove("rotate-180"); }
         });
 
         wrap.appendChild(card);
       });
-
-      acciones.appendChild(wrap);
-
     } else {
-      // Película normal
       const btnVer = document.createElement("button");
       btnVer.className = "bg-blue-600 px-4 py-2 rounded font-semibold";
       btnVer.textContent = "Ver Película";
@@ -481,18 +602,15 @@
       acciones.appendChild(btnVer);
     }
 
-    // Cerrar
-    modal.querySelector("#btnCerrarModal").addEventListener("click", () => modal.remove());
-    modal.querySelector(".modal-bg").addEventListener("click", () => modal.remove());
-
+    const cerrar = () => modal.remove();
+    modal.querySelector("#btnCerrarModal").addEventListener("click", cerrar);
+    modal.querySelector(".modal-bg").addEventListener("click", cerrar);
     document.body.appendChild(modal);
     pushModalState();
   }
 
   function abrirReproductor(p) {
-    // Cierra modal anterior (si está)
     closeTopModalOnce();
-
     const modal = document.createElement("div");
     modal.className = "modal-layer";
     modal.innerHTML = `
@@ -500,17 +618,19 @@
       <div class="modal-content">
         <button id="btnCerrarPlayer" class="btn-close absolute top-4 right-4 z-10" aria-label="Cerrar">✕</button>
       </div>`;
-
     const contenido = (p.pelicula ?? "").trim();
     const src = /^<iframe[\s\S]*<\/iframe>$/i.test(contenido) ? extraerSrcDeIframe(contenido) : contenido;
-
     const usar = crearIframeSeguro(src);
     modal.querySelector(".modal-content").appendChild(usar);
 
-    // Cerrar
-    modal.querySelector("#btnCerrarPlayer").addEventListener("click", () => modal.remove());
-    modal.querySelector(".modal-bg").addEventListener("click", () => modal.remove());
+    if (p.id) {
+      guardarProgresoCloud(p.id, { tipo:'pelicula', titulo: p.titulo || '' });
+      marcarViendoPelicula(p);
+    }
 
+    const cerrar = () => { limpiarViendo(); modal.remove(); };
+    modal.querySelector("#btnCerrarPlayer").addEventListener("click", cerrar);
+    modal.querySelector(".modal-bg").addEventListener("click", cerrar);
     document.body.appendChild(modal);
     pushModalState();
   }
@@ -521,7 +641,6 @@
   document.getElementById("btnCerrarSesion").addEventListener("click", cerrarSesion);
   document.getElementById("filtroCategoria").addEventListener("change", filtrarCategoria);
   document.getElementById("searchInput").addEventListener("input", buscarPorTitulo);
-
   document.getElementById("navSecciones").addEventListener("click", (e) => {
     const btn = e.target.closest("button[data-seccion]");
     if (!btn) return;
@@ -530,22 +649,34 @@
     filtrarSeccion(btn.dataset.seccion);
   });
 
-  // ===== Sesión persistida =====
-  const usuarioGuardado = sessionStorage.getItem("usuario");
-  if (usuarioGuardado) {
+  // ===== Restaurar sesión (revalida cupo y días) =====
+  (async function restoreSession(){
+    const saved = sessionStorage.getItem("usuario");
+    if (!saved) return;
     try {
-      usuarioActivo = JSON.parse(usuarioGuardado);
+      const u = JSON.parse(saved);
+      const snap = await db.collection('clientes').doc(u.id).get();
+      if (!snap.exists) throw new Error('cliente no existe');
+      const data = snap.data();
+      if (!data.activo) throw new Error('inactivo');
+      const fechaRegistro = data.fechaRegistro?.toDate?.() ?? new Date();
+      const expiryAt = fechaRegistro.getTime() + (data.meses * 30 * 24 * 60 * 60 * 1000);
+      if (expiryAt <= Date.now()) throw new Error('expirado');
+
+      const okPantallas = await puedeIniciarSesion({ id: snap.id, pantallas: data.pantallas });
+      if (!okPantallas) { sessionStorage.removeItem("usuario"); document.getElementById("loginModal").classList.remove("hidden"); mostrarError("Has alcanzado el límite de pantallas activas."); return; }
+
+      usuarioActivo = { id: snap.id, nombre: data.nombre ?? "Usuario", pantallas: data.pantallas ?? 0, expiryAt };
+      sessionStorage.setItem("usuario", JSON.stringify(usuarioActivo));
       iniciarSesion();
     } catch {
       sessionStorage.removeItem("usuario");
+      document.getElementById("loginModal").classList.remove("hidden");
     }
-  }
+  })();
 </script>
 </body>
 </html>
-
-
-
 
 
 
