@@ -8,34 +8,25 @@
   <script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-firestore-compat.js"></script>
   <style>
-    body {
-      background-color: #003366;
-      background-size: cover;
+    body { background: url('img/fondo.jpg') no-repeat center center fixed; background-size: cover; }
+    .nav button.active { color: #1e90ff; border-bottom: 2px solid #1e90ff; }
+    #userInfo { font-weight: bold; color: #7ec8f8; background: rgba(255,255,255,0.1); padding: 6px 10px; border-radius: 8px; backdrop-filter: blur(4px); }
+    .movie img { transition: transform 0.3s ease; }
+    .movie:hover img { transform: scale(1.05); }
+    .movie { outline: none; }
+    iframe { border: none; }
+
+    /* Botón de cierre rojo, cuadrado y tamaño fijo */
+    .btn-close {
+      width: 40px; height: 40px; background: #dc2626; color: #fff;
+      font-weight: bold; font-size: 20px; line-height: 40px; text-align: center;
+      border-radius: 6px; box-shadow: 0 2px 8px rgba(0,0,0,0.4);
     }
-    .nav button.active {
-      color: #1e90ff;
-      border-bottom: 2px solid #1e90ff;
-    }
-    #userInfo {
-      font-weight: bold;
-      color: #7ec8f8;
-      background: rgba(255,255,255,0.1);
-      padding: 6px 10px;
-      border-radius: 8px;
-      backdrop-filter: blur(4px);
-    }
-    .movie img {
-      transition: transform 0.3s ease;
-    }
-    .movie:hover img {
-      transform: scale(1.05);
-    }
-    .movie {
-      outline: none;
-    }
-    iframe {
-      border: none;
-    }
+
+    /* Modal base */
+    .modal-layer { position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center; }
+    .modal-bg { position:absolute; inset:0; background: rgba(0,0,0,0.9); }
+    .modal-content { position:relative; width:100%; height:100%; }
   </style>
 </head>
 <body class="text-white font-sans">
@@ -43,9 +34,9 @@
 <!-- Modal Login -->
 <div id="loginModal" class="fixed inset-0 bg-black bg-opacity-90 flex items-center justify-center z-50">
   <div class="bg-gray-800 p-8 rounded shadow-lg w-80">
-    <img src="img/HERPLUS.png" class="w-24 mx-auto mb-4" />
+    <img src="img/HERPLUS.png" class="w-24 mx-auto mb-4" alt="HERPLUS Logo" />
     <input id="codigoInput" type="text" placeholder="Ingresa tu código" class="w-full p-2 rounded mb-4 text-black" />
-    <button onclick="validarCodigo()" class="w-full bg-blue-600 py-2 rounded font-semibold">Ingresar</button>
+    <button id="btnIngresar" class="w-full bg-blue-600 py-2 rounded font-semibold">Ingresar</button>
     <p id="errorMsg" class="text-red-400 mt-3 text-center hidden">Código inválido o cuenta inactiva.</p>
   </div>
 </div>
@@ -58,20 +49,20 @@
   </div>
   <div class="w-full md:w-1/3 text-center mt-2 md:mt-0" id="userInfo"></div>
   <div class="w-full md:w-1/3 text-right mt-2 md:mt-0">
-    <button onclick="cerrarSesion()" class="bg-red-600 px-4 py-2 rounded">Cerrar sesión</button>
+    <button id="btnCerrarSesion" class="bg-red-600 px-4 py-2 rounded">Cerrar sesión</button>
   </div>
 </header>
 
 <!-- Navegación -->
-<nav class="nav bg-blue-800 flex flex-wrap justify-center gap-4 p-3 text-sm">
-  <button onclick="filtrarSeccion('todos')" class="active">Todos</button>
-  <button onclick="filtrarSeccion('pelicula')">Películas</button>
-  <button onclick="filtrarSeccion('serie')">Series</button>
-  <button onclick="filtrarSeccion('tv')">TV en Vivo</button>
-  <select id="filtroCategoria" onchange="filtrarCategoria()" class="bg-gray-800 text-white px-2 py-1 rounded">
+<nav id="navSecciones" class="nav bg-blue-800 flex flex-wrap justify-center gap-4 p-3 text-sm">
+  <button data-seccion="todos" class="active">Todos</button>
+  <button data-seccion="pelicula">Películas</button>
+  <button data-seccion="serie">Series</button>
+  <button data-seccion="tv">TV en Vivo</button>
+  <select id="filtroCategoria" class="bg-gray-800 text-white px-2 py-1 rounded">
     <option value="todos">Filtrar por categoría</option>
   </select>
-  <input id="searchInput" type="text" placeholder="Buscar título..." oninput="buscarPorTitulo()" class="bg-gray-700 text-white px-3 py-1 rounded" />
+  <input id="searchInput" type="text" placeholder="Buscar título..." class="bg-gray-700 text-white px-3 py-1 rounded" />
 </nav>
 
 <!-- Alerta de vencimiento -->
@@ -81,7 +72,9 @@
 <main class="p-4">
   <div id="contenedorSecciones" class="space-y-6"></div>
 </main>
+
 <script>
+  // ===== Firebase =====
   const firebaseConfig = {
     apiKey: "AIzaSyD_v8yXx1W6zcGFXXMHeNJh0RSzbnO-j84",
     authDomain: "herplus.firebaseapp.com",
@@ -90,81 +83,207 @@
     messagingSenderId: "556494279952",
     appId: "1:556494279952:web:f788776f50840b28434195"
   };
-
   firebase.initializeApp(firebaseConfig);
   const db = firebase.firestore();
+
+  // ===== Estado =====
   let usuarioActivo = null;
   let todasLasPeliculas = [];
 
-  function validarCodigo() {
-    const codigo = document.getElementById("codigoInput").value.trim();
-    db.collection("clientes").where("codigo", "==", codigo).get().then(snapshot => {
-      if (snapshot.empty) return mostrarError();
-      const doc = snapshot.docs[0];
-      const data = doc.data();
-      if (!data.activo) return mostrarError();
-      const fechaRegistro = data.fechaRegistro?.toDate?.() || new Date();
-      const diasRestantes = Math.max(0, (data.meses * 30) - Math.floor((Date.now() - fechaRegistro.getTime()) / (1000 * 60 * 60 * 24)));
-      if (diasRestantes <= 0) return mostrarError();
-      usuarioActivo = { ...data, id: doc.id, diasRestantes };
-      sessionStorage.setItem("usuario", JSON.stringify(usuarioActivo));
-      iniciarSesion();
-    });
+  // ===== Utilidades (iframes/URLs de cualquier dominio) =====
+  function extraerSrcDeIframe(html) {
+    const m = /src=["']([^"']+)["']/i.exec(html);
+    return m ? m[1] : "";
   }
 
-  function mostrarError() {
-    document.getElementById("errorMsg").classList.remove("hidden");
+  // Normaliza enlaces de Google Drive a /preview para embeber
+  function normalizarUrlDrive(url) {
+    try {
+      const u = new URL(url);
+      if (u.hostname.includes("drive.google.com")) {
+        // /file/d/ID/...
+        const fileIdMatch = /\/file\/d\/([^/]+)/.exec(u.pathname);
+        if (fileIdMatch) return `https://drive.google.com/file/d/${fileIdMatch[1]}/preview`;
+        // /open?id=ID
+        if (u.pathname === "/open" && u.searchParams.get("id")) {
+          const id = u.searchParams.get("id");
+          return `https://drive.google.com/file/d/${id}/preview`;
+        }
+        // /uc?id=ID
+        if (u.pathname === "/uc" && u.searchParams.get("id")) {
+          const id = u.searchParams.get("id");
+          return `https://drive.google.com/file/d/${id}/preview`;
+        }
+      }
+      return url;
+    } catch { return url; }
+  }
+
+  // Crea un iframe con sandbox (permitimos scripts y fullscreen)
+  function crearIframeSeguro(src) {
+    const ifr = document.createElement("iframe");
+    ifr.src = normalizarUrlDrive(src);
+    ifr.setAttribute("sandbox", "allow-same-origin allow-scripts allowfullscreen");
+    ifr.setAttribute("allow", "autoplay; fullscreen; picture-in-picture; encrypted-media");
+    ifr.className = "absolute inset-0 w-full h-full";
+    ifr.loading = "lazy";
+    return ifr;
+  }
+
+  function mostrarError(mensaje) {
+    const em = document.getElementById("errorMsg");
+    em.textContent = mensaje;
+    em.classList.remove("hidden");
+  }
+
+  function getDiasRestantes() {
+    if (!usuarioActivo?.expiryAt) return 0;
+    return Math.max(0, Math.ceil((usuarioActivo.expiryAt - Date.now()) / 86400000));
+  }
+
+  function pintarUserInfo() {
+    const dias = getDiasRestantes();
+    document.getElementById("userInfo").textContent =
+      `${usuarioActivo.nombre} • ${dias} día(s) restantes`;
+  }
+
+  function showWarn() {
+    const a = document.getElementById("alertaMsg");
+    a.textContent = "⚠️ Tu cuenta está por vencer. Contacta a tu proveedor.";
+    a.classList.remove("hidden");
+  }
+
+  // ===== Login y sesión =====
+  async function validarCodigo() {
+    const codigo = document.getElementById("codigoInput").value.trim();
+    document.getElementById("errorMsg").classList.add("hidden");
+    if (!codigo) { mostrarError("Ingresa tu código."); return; }
+
+    try {
+      const snapshot = await db.collection("clientes").where("codigo", "==", codigo).limit(1).get();
+      if (snapshot.empty) return mostrarError("Código inválido o cuenta inactiva.");
+
+      const doc = snapshot.docs[0];
+      const data = doc.data();
+
+      if (!data.activo) return mostrarError("Cuenta inactiva.");
+      if ((data.pantallas ?? 0) <= 0) return mostrarError("No tienes pantallas disponibles. Contacta a tu proveedor.");
+
+      const fechaRegistro = data.fechaRegistro?.toDate?.() ?? new Date();
+      const expiryAt = fechaRegistro.getTime() + (data.meses * 30 * 24 * 60 * 60 * 1000);
+      const diasRestantes = Math.max(0, Math.ceil((expiryAt - Date.now()) / 86400000));
+      if (diasRestantes <= 0) return mostrarError("Tu cuenta ha expirado.");
+
+      // Guarda solo lo necesario
+      usuarioActivo = {
+        id: doc.id,
+        nombre: data.nombre ?? "Usuario",
+        pantallas: data.pantallas ?? 0,
+        expiryAt
+      };
+      sessionStorage.setItem("usuario", JSON.stringify(usuarioActivo));
+      iniciarSesion();
+
+    } catch (e) {
+      console.error(e);
+      mostrarError("Error de red. Intenta de nuevo.");
+    }
   }
 
   function iniciarSesion() {
     document.getElementById("loginModal").classList.add("hidden");
-    document.getElementById("userInfo").textContent = `${usuarioActivo.nombre} • ${usuarioActivo.diasRestantes} día(s) restantes`;
-    if (usuarioActivo.diasRestantes <= 3) {
-      document.getElementById("alertaMsg").textContent = "⚠️ Tu cuenta está por vencer. Contacta a tu proveedor.";
-      document.getElementById("alertaMsg").classList.remove("hidden");
-    }
+    pintarUserInfo();
+
+    // Actualiza cada día
+    setInterval(() => {
+      pintarUserInfo();
+      if (getDiasRestantes() <= 3) showWarn();
+    }, 86400000);
+
+    if (getDiasRestantes() <= 3) showWarn();
+
     cargarContenido();
   }
 
   function cerrarSesion() {
     sessionStorage.removeItem("usuario");
-    location.reload();
+    usuarioActivo = null;
+    document.getElementById("userInfo").textContent = "";
+    document.getElementById("alertaMsg").classList.add("hidden");
+    document.getElementById("loginModal").classList.remove("hidden");
   }
 
-  function cargarContenido() {
-    db.collection("peliculas").get().then(snapshot => {
-      todasLasPeliculas = snapshot.docs.map(doc => doc.data());
+  // ===== Contenido =====
+  async function cargarContenido() {
+    try {
+      const snapshot = await db.collection("peliculas").get();
+      // IMPORTANTE: conservar el ID para progreso de series
+      const peliculasFS = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+
+      todasLasPeliculas = [...peliculasFS];
       mostrarSecciones(todasLasPeliculas);
       llenarFiltroCategorias(todasLasPeliculas);
-    });
+    } catch (e) {
+      console.error(e);
+      alert("No se pudo cargar el contenido. Revisa tu conexión.");
+    }
+  }
+
+  function renderCard(p, idx) {
+    const titulo = p.titulo ?? "Sin título";
+    const img = p.imagen ?? "img/placeholder.jpg";
+    return `
+      <div class="movie cursor-pointer" data-idx="${idx}" tabindex="0" aria-label="${titulo}">
+        <div class="rounded shadow overflow-hidden">
+          <div style="aspect-ratio:2/3;" class="w-full bg-gray-800">
+            <img src="${img}" alt="${titulo}" loading="lazy" class="w-full h-full object-cover">
+          </div>
+        </div>
+        <p class="mt-1 text-sm text-center">${titulo}</p>
+      </div>`;
   }
 
   function mostrarSecciones(peliculas) {
+    // Agrupar por categoría
     const secciones = {};
     peliculas.forEach(p => {
-      if (!secciones[p.categoria]) secciones[p.categoria] = [];
-      secciones[p.categoria].push(p);
+      const cat = p.categoria ?? "Sin categoría";
+      if (!secciones[cat]) secciones[cat] = [];
+      secciones[cat].push(p);
     });
 
     const cont = document.getElementById("contenedorSecciones");
     cont.innerHTML = "";
-    for (let cat in secciones) {
-      const div = document.createElement("div");
-      div.innerHTML = `<h2 class="text-lg font-bold text-blue-300 mb-2">${cat}</h2><div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">` +
-        secciones[cat].map(p => `
-          <div class="movie cursor-pointer" onclick='mostrarModal(${JSON.stringify(p)})'>
-            <img src="${p.imagen}" class="rounded shadow w-full">
-            <p class="mt-1 text-sm text-center">${p.titulo}</p>
-          </div>
-        `).join("") +
-      `</div>`;
-      cont.appendChild(div);
+
+    for (const cat in secciones) {
+      const lista = secciones[cat];
+      const wrap = document.createElement("section");
+      wrap.innerHTML = `
+        <h2 class="text-lg font-bold text-blue-300 mb-2">${cat}</h2>
+        <div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
+          ${lista.map((p, i) => renderCard(p, i)).join("")}
+        </div>`;
+      cont.appendChild(wrap);
+
+      // Listeners para cada card de esta sección
+      wrap.querySelectorAll(".movie").forEach(card => {
+        card.addEventListener("click", () => {
+          const i = +card.dataset.idx;
+          mostrarModal(lista[i]);
+        });
+        card.addEventListener("keyup", (e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            const i = +card.dataset.idx;
+            mostrarModal(lista[i]);
+          }
+        });
+      });
     }
   }
 
   function llenarFiltroCategorias(peliculas) {
     const filtro = document.getElementById("filtroCategoria");
-    const categorias = [...new Set(peliculas.map(p => p.categoria))];
+    const categorias = Array.from(new Set(peliculas.map(p => p.categoria ?? "Sin categoría")));
     filtro.innerHTML = `<option value="todos">Filtrar por categoría</option>` +
       categorias.map(c => `<option value="${c}">${c}</option>`).join("");
   }
@@ -172,72 +291,260 @@
   function filtrarCategoria() {
     const cat = document.getElementById("filtroCategoria").value;
     if (cat === "todos") return mostrarSecciones(todasLasPeliculas);
-    const filtrado = todasLasPeliculas.filter(p => p.categoria === cat);
+    const filtrado = todasLasPeliculas.filter(p => (p.categoria ?? "Sin categoría") === cat);
     mostrarSecciones(filtrado);
   }
 
   function filtrarSeccion(tipo) {
     if (tipo === "todos") return mostrarSecciones(todasLasPeliculas);
-    const filtrado = todasLasPeliculas.filter(p => p.seccion === tipo);
+    const filtrado = todasLasPeliculas.filter(p => (p.seccion ?? "").toLowerCase() === tipo);
     mostrarSecciones(filtrado);
-    document.querySelectorAll(".nav button").forEach(b => b.classList.remove("active"));
-    document.querySelector(`.nav button[onclick="filtrarSeccion('${tipo}')"]`).classList.add("active");
   }
 
   function buscarPorTitulo() {
     const texto = document.getElementById("searchInput").value.toLowerCase();
-    const filtrado = todasLasPeliculas.filter(p => p.titulo.toLowerCase().includes(texto));
+    const filtrado = todasLasPeliculas.filter(p => (p.titulo ?? "").toLowerCase().includes(texto));
     mostrarSecciones(filtrado);
   }
 
-  function mostrarModal(p) {
+  // ===== Progreso por serie (localStorage) =====
+  function keyProgreso(serieId){ return `progress_${serieId}`; }
+  function guardarProgresoSerie(serieId, data){
+    try { localStorage.setItem(keyProgreso(serieId), JSON.stringify(data)); } catch {}
+  }
+  function cargarProgresoSerie(serieId){
+    try {
+      const raw = localStorage.getItem(keyProgreso(serieId));
+      return raw ? JSON.parse(raw) : null;
+    } catch { return null; }
+  }
+
+  // ===== Modales =====
+  function pushModalState() {
+    history.pushState({ modal: true }, "");
+    const popListener = () => closeTopModalOnce();
+    const escListener = (e) => { if (e.key === "Escape") closeTopModalOnce(); };
+    window.addEventListener("popstate", popListener, { once: true });
+    document.addEventListener("keydown", escListener, { once: true });
+  }
+
+  function closeTopModalOnce() {
+    const modals = document.querySelectorAll(".modal-layer");
+    if (modals.length) modals[modals.length - 1].remove();
+  }
+
+  // Reproduce un episodio (acepta url o iframe) y guarda progreso
+  function abrirEpisodio(serieId, tempNumero, epIdx, ep) {
+    const contenido = ((ep.url ?? ep.iframe) ?? "").trim();
+    if (!contenido) { alert("Episodio sin fuente"); return; }
+
+    // Cierra modal anterior si está
+    const prev = document.querySelector(".modal-layer");
+    prev?.remove();
+
     const modal = document.createElement("div");
-    modal.className = "fixed inset-0 bg-black bg-opacity-90 z-50 flex items-center justify-center";
+    modal.className = "modal-layer";
     modal.innerHTML = `
-      <div class="relative w-full h-full">
-        <iframe src="${p.trailer}" class="absolute inset-0 w-full h-full z-0" frameborder="0" allowfullscreen></iframe>
-        <div id="overlayInfo" class="absolute top-0 left-0 w-full h-full flex flex-col justify-center items-center bg-black bg-opacity-70 text-center z-10 p-4 space-y-4">
-          <img src="${p.imagen}" class="w-32 mb-2 rounded shadow">
-          <h2 class="text-2xl font-bold">${p.titulo}</h2>
-          <p class="px-4 max-w-xl">${p.descripcion}</p>
-          <button onclick="abrirReproductor('${encodeURIComponent(p.pelicula)}', this)" class="bg-blue-600 px-4 py-2 rounded font-semibold">Ver Película</button>
-          <button onclick="cerrarModal(this)" class="absolute top-4 right-4 bg-red-600 p-2 rounded-full">✕</button>
+      <div class="modal-bg bg-black"></div>
+      <div class="modal-content">
+        <button id="btnCerrarPlayer" class="btn-close absolute top-4 right-4 z-10" aria-label="Cerrar">✕</button>
+      </div>`;
+
+    const src = /^<iframe[\s\S]*<\/iframe>$/i.test(contenido) ? extraerSrcDeIframe(contenido) : contenido;
+    const usar = crearIframeSeguro(src);
+    modal.querySelector(".modal-content").appendChild(usar);
+
+    // Guardar progreso
+    if (serieId) guardarProgresoSerie(serieId, { temporada: tempNumero, episodioIndex: epIdx });
+
+    // Cerrar
+    modal.querySelector("#btnCerrarPlayer").addEventListener("click", () => modal.remove());
+    modal.querySelector(".modal-bg").addEventListener("click", () => modal.remove());
+
+    document.body.appendChild(modal);
+    pushModalState();
+  }
+
+  function mostrarModal(p) {
+    const esSerie = (p.seccion ?? "").toLowerCase() === "serie" && Array.isArray(p.temporadas);
+
+    const modal = document.createElement("div");
+    modal.className = "modal-layer";
+    modal.innerHTML = `
+      <div class="modal-bg"></div>
+      <div class="modal-content">
+        <div id="overlayInfo" class="absolute top-0 left-0 w-full h-full flex flex-col items-center bg-black bg-opacity-70 text-center z-10 p-4 space-y-4 overflow-y-auto">
+          <img src="${p.imagen ?? 'img/placeholder.jpg'}" class="w-32 mb-2 rounded shadow" alt="${p.titulo ?? 'Portada'}">
+          <h2 class="text-2xl font-bold"></h2>
+          <p class="px-4 max-w-3xl"></p>
+          <div id="acciones" class="w-full max-w-3xl"></div>
+          <button id="btnCerrarModal" class="btn-close absolute top-4 right-4" aria-label="Cerrar">✕</button>
         </div>
       </div>`;
+
+    // Texto seguro
+    modal.querySelector("h2").textContent = p.titulo ?? "Sin título";
+    modal.querySelector("p").textContent = p.descripcion ?? "";
+
+    // Trailer (opcional)
+    const trailerRaw = typeof p.trailer === "string" ? p.trailer.trim() : "";
+    if (trailerRaw) {
+      const src = /^<iframe[\s\S]*<\/iframe>$/i.test(trailerRaw) ? extraerSrcDeIframe(trailerRaw) : trailerRaw;
+      const ifr = crearIframeSeguro(src);
+      modal.querySelector(".modal-content").appendChild(ifr);
+    }
+
+    const acciones = modal.querySelector("#acciones");
+
+    if (esSerie) {
+      // Botón "Continuar donde me quedé"
+      const prog = p.id ? cargarProgresoSerie(p.id) : null;
+      if (prog && Array.isArray(p.temporadas)) {
+        const tempSel = p.temporadas.find(t => (t.numero ?? 0) === prog.temporada);
+        if (tempSel && tempSel.episodios?.[prog.episodioIndex]) {
+          const ep = tempSel.episodios[prog.episodioIndex];
+          const btnCont = document.createElement("button");
+          btnCont.className = "bg-yellow-500 hover:bg-yellow-600 px-4 py-2 rounded font-semibold mb-3";
+          btnCont.textContent = `▶ Continuar: T${prog.temporada} • ${ep.titulo ?? ('Ep ' + (prog.episodioIndex+1))}`;
+          btnCont.addEventListener("click", () => abrirEpisodio(p.id, prog.temporada, prog.episodioIndex, ep));
+          acciones.appendChild(btnCont);
+        }
+      }
+
+      // Acordeón de temporadas
+      const wrap = document.createElement("div");
+      wrap.className = "space-y-3 text-left";
+
+      // Ordena por numero asc
+      const temps = [...p.temporadas].sort((a,b)=>(a.numero??0)-(b.numero??0));
+
+      temps.forEach((t, tIdx) => {
+        const tempTitulo = t.nombre || `Temporada ${t.numero ?? (tIdx+1)}`;
+        const card = document.createElement("div");
+        card.className = "bg-gray-800 bg-opacity-60 rounded";
+
+        card.innerHTML = `
+          <button class="w-full flex items-center justify-between px-4 py-3 font-semibold text-blue-300">
+            <span>${tempTitulo}</span>
+            <span class="transform transition-transform">▼</span>
+          </button>
+          <div class="px-4 pb-4 hidden">
+            <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2"></div>
+          </div>`;
+
+        const btnHeader = card.querySelector("button");
+        const arrow = btnHeader.querySelector("span:last-child");
+        const body = card.querySelector("div.hidden");
+        const grid = body.querySelector(".grid");
+
+        // Rellenar episodios
+        const eps = Array.isArray(t.episodios) ? [...t.episodios] : [];
+        eps.sort((a,b)=>(a.numero??0)-(b.numero??0));
+
+        eps.forEach((ep, epIdx) => {
+          const btn = document.createElement("button");
+          btn.className = "bg-blue-600 hover:bg-blue-700 px-3 py-2 rounded text-sm text-left";
+          const etiqueta = ep.titulo ?? `Episodio ${epIdx+1}`;
+          const num = (ep.numero != null) ? `E${ep.numero} - ` : "";
+          btn.textContent = `${num}${etiqueta}`;
+          btn.addEventListener("click", () => abrirEpisodio(p.id, (t.numero ?? (tIdx+1)), epIdx, ep));
+          grid.appendChild(btn);
+        });
+
+        // Toggle acordeón (cierra otros)
+        btnHeader.addEventListener("click", () => {
+          const isHidden = body.classList.contains("hidden");
+          document.querySelectorAll("#acciones > div > div > div.px-4.pb-4").forEach(el=>{
+            el.classList.add("hidden");
+            el.previousElementSibling?.querySelector("span:last-child")?.classList.remove("rotate-180");
+          });
+          if (isHidden) {
+            body.classList.remove("hidden");
+            arrow.classList.add("rotate-180");
+          } else {
+            body.classList.add("hidden");
+            arrow.classList.remove("rotate-180");
+          }
+        });
+
+        wrap.appendChild(card);
+      });
+
+      acciones.appendChild(wrap);
+
+    } else {
+      // Película normal
+      const btnVer = document.createElement("button");
+      btnVer.className = "bg-blue-600 px-4 py-2 rounded font-semibold";
+      btnVer.textContent = "Ver Película";
+      btnVer.addEventListener("click", () => abrirReproductor(p));
+      acciones.appendChild(btnVer);
+    }
+
+    // Cerrar
+    modal.querySelector("#btnCerrarModal").addEventListener("click", () => modal.remove());
+    modal.querySelector(".modal-bg").addEventListener("click", () => modal.remove());
+
     document.body.appendChild(modal);
+    pushModalState();
   }
 
-  function cerrarModal(btn) {
-    const modal = btn.closest(".fixed");
-    modal.remove();
-  }
-
-  function abrirReproductor(pelicula, btn) {
-    const anteriorModal = btn.closest(".fixed");
-    anteriorModal.remove();
-
-    const contenido = decodeURIComponent(pelicula);
-    const esIframe = contenido.includes("<iframe");
+  function abrirReproductor(p) {
+    // Cierra modal anterior (si está)
+    closeTopModalOnce();
 
     const modal = document.createElement("div");
-    modal.className = "fixed inset-0 bg-black z-50 flex items-center justify-center";
-
+    modal.className = "modal-layer";
     modal.innerHTML = `
-      <div class="relative w-full h-full">
-        ${esIframe ? contenido : `<iframe src="${contenido}" class="absolute inset-0 w-full h-full" frameborder="0" allowfullscreen></iframe>`}
-        <button onclick="this.closest('.fixed').remove()" class="absolute top-4 right-4 bg-red-600 p-2 rounded-full z-10">✕</button>
+      <div class="modal-bg bg-black"></div>
+      <div class="modal-content">
+        <button id="btnCerrarPlayer" class="btn-close absolute top-4 right-4 z-10" aria-label="Cerrar">✕</button>
       </div>`;
+
+    const contenido = (p.pelicula ?? "").trim();
+    const src = /^<iframe[\s\S]*<\/iframe>$/i.test(contenido) ? extraerSrcDeIframe(contenido) : contenido;
+
+    const usar = crearIframeSeguro(src);
+    modal.querySelector(".modal-content").appendChild(usar);
+
+    // Cerrar
+    modal.querySelector("#btnCerrarPlayer").addEventListener("click", () => modal.remove());
+    modal.querySelector(".modal-bg").addEventListener("click", () => modal.remove());
+
     document.body.appendChild(modal);
+    pushModalState();
   }
 
+  // ===== Listeners de UI =====
+  document.getElementById("btnIngresar").addEventListener("click", validarCodigo);
+  document.getElementById("codigoInput").addEventListener("keyup", (e) => { if (e.key === "Enter") validarCodigo(); });
+  document.getElementById("btnCerrarSesion").addEventListener("click", cerrarSesion);
+  document.getElementById("filtroCategoria").addEventListener("change", filtrarCategoria);
+  document.getElementById("searchInput").addEventListener("input", buscarPorTitulo);
+
+  document.getElementById("navSecciones").addEventListener("click", (e) => {
+    const btn = e.target.closest("button[data-seccion]");
+    if (!btn) return;
+    document.querySelectorAll(".nav button").forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+    filtrarSeccion(btn.dataset.seccion);
+  });
+
+  // ===== Sesión persistida =====
   const usuarioGuardado = sessionStorage.getItem("usuario");
   if (usuarioGuardado) {
-    usuarioActivo = JSON.parse(usuarioGuardado);
-    iniciarSesion();
+    try {
+      usuarioActivo = JSON.parse(usuarioGuardado);
+      iniciarSesion();
+    } catch {
+      sessionStorage.removeItem("usuario");
+    }
   }
 </script>
 </body>
 </html>
+
+
 
 
 
